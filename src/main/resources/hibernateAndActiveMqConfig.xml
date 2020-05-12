@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:aop="http://www.springframework.org/schema/aop"
+	xmlns:context="http://www.springframework.org/schema/context"
+	xmlns:jee="http://www.springframework.org/schema/jee" xmlns:tx="http://www.springframework.org/schema/tx"
+	xmlns:util="http://www.springframework.org/schema/util" xmlns:dwr="http://www.directwebremoting.org/schema/spring-dwr"
+	xmlns:jdbc="http://www.springframework.org/schema/jdbc" xmlns:amq="http://activemq.apache.org/schema/core"
+	xsi:schemaLocation="http://www.springframework.org/schema/aop
+       http://www.springframework.org/schema/aop/spring-aop.xsd
+       http://www.springframework.org/schema/beans
+       http://www.springframework.org/schema/beans/spring-beans.xsd
+       http://www.springframework.org/schema/context
+       http://www.springframework.org/schema/context/spring-context.xsd
+       http://www.springframework.org/schema/jee
+       http://www.springframework.org/schema/jee/spring-jee.xsd
+       http://www.springframework.org/schema/tx
+       http://www.springframework.org/schema/tx/spring-tx.xsd
+	   http://www.springframework.org/schema/util
+	   http://www.springframework.org/schema/util/spring-util.xsd
+       http://www.directwebremoting.org/schema/spring-dwr
+       http://www.directwebremoting.org/schema/spring-dwr.xsd
+       http://www.springframework.org/schema/jdbc
+       http://www.springframework.org/schema/jdbc/spring-jdbc.xsd
+       http://activemq.apache.org/schema/core
+       http://activemq.apache.org/schema/core/activemq-core.xsd">
+
+	<bean
+		class="org.springframework.beans.factory.annotation.AutowiredAnnotationBeanPostProcessor" />
+
+	<!-- ==================== -->
+	<!-- Hibernate Session settings -->
+	<!-- ==================== -->
+
+	<bean id="abstractHibernateSessionFactory"
+		class="org.springframework.orm.hibernate4.LocalSessionFactoryBean"
+		abstract="true">
+		<property name="hibernateProperties">
+			<props>
+				<prop key="hibernate.dialect">org.hibernate.dialect.HSQLDialect</prop>
+				<prop key="hibernate.query.substitutions">0</prop>
+				<prop key="hibernate.show_sql">${hibernate.show_sql}</prop>
+				<prop key="hibernate.use_sql_comments">true</prop>
+				<prop key="hibernate.connection.autocommit">true</prop>
+				<!-- Second level EhCache cache -->
+				<prop key="hibernate.cache.use_second_level_cache">true</prop>
+				<prop key="hibernate.cache.provider_class">org.hibernate.cache.EhCacheProvider</prop>
+				<prop key="hibernate.cache.use_query_cache">true</prop>
+				<prop key="hibernate.generate_statistics">${hibernate.generate_statistics}</prop>
+				<prop key="hibernate.cache.use_structured_entries">true</prop>
+				<prop key="hibernate.cache.region.factory_class">org.hibernate.cache.ehcache.EhCacheRegionFactory
+				</prop>
+			</props>
+		</property>
+	</bean>
+
+	<bean id="hibernateSessionFactory" parent="abstractHibernateSessionFactory">
+		<property name="dataSource">
+			<ref bean="dataSource" />
+		</property>
+		<property name="annotatedClasses">
+			<ref bean="hibernateDomainClasses" />
+		</property>
+	</bean>
+
+	<util:list id="hibernateDomainClasses" list-class="java.util.LinkedList">
+		<value>com.nscooper.mizuho.domain.Instrument</value>
+		<value>com.nscooper.mizuho.domain.Price</value>
+		<value>com.nscooper.mizuho.domain.Vendor</value>
+	</util:list>
+
+	<!-- =============== -->
+	<!-- Transaction Manager -->
+	<!-- =============== -->
+
+	<bean id="transactionManager"
+		class="org.springframework.orm.hibernate4.HibernateTransactionManager">
+		<property name="dataSource" ref="dataSource" />
+		<property name="sessionFactory">
+			<ref bean="hibernateSessionFactory" />
+		</property>
+	</bean>
+
+	<tx:annotation-driven />
+
+	<!-- =============== -->
+	<!-- ActiveMQ -->
+	<!-- =============== -->
+
+	<!-- embedded ActiveMQ Broker -->
+	<amq:broker useJmx="false" persistent="false">
+		<amq:transportConnectors>
+			<amq:transportConnector uri="${activeMqHostnameAndPort}" />
+		</amq:transportConnectors>
+	</amq:broker>
+
+	<bean id="jmsConnectionFactory" class="org.apache.activemq.spring.ActiveMQConnectionFactory">
+		<property name="brokerURL" value="${activeMqHostnameAndPort}" />
+	</bean>
+
+	<bean id="pooledJmsConnectionFactory" class="org.apache.activemq.pool.PooledConnectionFactory"
+		destroy-method="stop" primary="true">
+		<constructor-arg ref="jmsConnectionFactory" />
+	</bean>
+
+	<bean id="queueDestination" class="org.apache.activemq.command.ActiveMQQueue">
+		<constructor-arg value="${inboundPricesQueueName}" />
+	</bean>
+
+	<bean id="jmsQueueTemplate" class="org.springframework.jms.core.JmsTemplate" primary="true">
+		<constructor-arg ref="pooledJmsConnectionFactory" />
+		<property name="pubSubDomain" value="false" />
+	</bean>
+
+	<!-- =============== -->
+
+	<bean id="instrumentPriceConsumer" class="com.nscooper.mizuho.components.InstrumentPriceConsumer" />
+
+	<bean id="messageQueueListenerContainer"
+		class="org.springframework.jms.listener.DefaultMessageListenerContainer">
+		<property name="connectionFactory" ref="pooledJmsConnectionFactory" />
+		<property name="destination" ref="queueDestination" />
+		<property name="messageListener" ref="instrumentPriceConsumer" />
+		<property name="concurrentConsumers" value="5" />
+		<property name="acceptMessagesWhileStopping" value="false" />
+		<property name="recoveryInterval" value="10000" />
+		<property name="cacheLevelName" value="CACHE_CONSUMER" />
+	</bean>
+
+	<!-- =============== -->
+
+	<bean id="topicDestination" class="org.apache.activemq.command.ActiveMQTopic">
+		<constructor-arg value="${outboundPricesTopicName}" />
+	</bean>
+	
+	<bean id="jmsTopicTemplate" class="org.springframework.jms.core.JmsTemplate">
+		<constructor-arg ref="pooledJmsConnectionFactory" />
+		<property name="defaultDestination" ref="topicDestination" />
+		<property name="pubSubDomain" value="true" /> <!-- Topic setting -->
+	</bean>
+</beans>
